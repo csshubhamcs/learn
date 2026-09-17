@@ -18,7 +18,10 @@ name: build-and-publish
 
 on:
   push:
-    branches: [main]
+    # Both, so it runs whichever default branch name the repo uses. GitHub silently does
+    # nothing when the branch does not match -- the workflow never appears in the Actions
+    # tab at all, which looks exactly like Actions being broken or disabled.
+    branches: [main, master]
   pull_request:
   workflow_dispatch:
 

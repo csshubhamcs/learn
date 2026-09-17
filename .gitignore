@@ -5,5 +5,3 @@ build/
 .env
 
 
-# plugin scratch, regenerated on demand
-.claude-flow/
