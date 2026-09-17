@@ -85,6 +85,16 @@ jobs:
       # GitHub-hosted runner has a working Docker daemon, so nothing to install.
       - run: ./gradlew :${{ matrix.service }}:build --no-daemon
 
+      # The Dockerfile packages a jar rather than compiling one, so the publish job needs
+      # the artifact this job just produced. Passing it forward is what keeps the promise of
+      # compiling once: without this, publish would have to run the whole Gradle build again.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: jar-${{ matrix.service }}
+          path: ${{ matrix.service }}/build/libs/${{ matrix.service }}.jar
+          retention-days: 1
+          if-no-files-found: error
+
       # Only on failure — a green run's reports are noise, a red run's are the point.
       - if: failure()
         uses: actions/upload-artifact@v4
@@ -127,6 +137,16 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - uses: docker/setup-buildx-action@v3
+
+      # Restore the jar built by the `build` job. The path must match the Dockerfile's
+      # COPY exactly: <service>/build/libs/<service>.jar, relative to the repo root.
+      - uses: actions/download-artifact@v4
+        with:
+          name: jar-${{ matrix.service }}
+          path: ${{ matrix.service }}/build/libs
+
+      - name: Confirm the jar is where the Dockerfile expects it
+        run: ls -l ${{ matrix.service }}/build/libs/${{ matrix.service }}.jar
 
       # ghcr.io rejects uppercase in an image path, and GitHub usernames may contain it.
       - name: Lowercase the image name
