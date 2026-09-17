@@ -52,11 +52,24 @@ jobs:
               - 'build.gradle.kts'
               - 'settings.gradle.kts'
               - 'gradle/**'
+              - '.github/workflows/build-and-publish.yml'
             task-service:
               - 'task-service/**'
               - 'build.gradle.kts'
               - 'settings.gradle.kts'
               - 'gradle/**'
+              - '.github/workflows/build-and-publish.yml'
+            # The workflow file itself is in every filter on purpose: a change to HOW an
+            # image is built or published must re-verify the services it builds. Without it a
+            # broken publish step ships silently -- exactly what happened here, when the
+            # Dockerfile started packaging a pre-built jar and the publish job had no jar to
+            # package. The build passed, publish failed, and the next workflow-only commit
+            # skipped everything so the fix went untested.
+            #
+            # The cost is that every workflow tweak rebuilds both services and mints new
+            # image tags for unchanged code. At this size that is cheap; on a large monorepo
+            # you would drop this line and verify the pipeline another way.
+            #
             # The next service goes here, same shape. The key must match BOTH the Gradle
             # module name and charts/<name>/ in learn-helm-chart. Forgetting this entry is
             # silent: pushes to that service match no filter, the matrix is empty, the
