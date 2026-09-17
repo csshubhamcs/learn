@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+
+    <!--
+      Every profile except local: structured JSON on stdout, for log aggregators.
+
+      RequestIdFilter (and its "requestId" MDC key) was removed from this project, so the
+      encoder does not name any specific MDC key here. LogstashEncoder's default behavior
+      already serializes the *entire* current MDC map as top-level JSON fields with no
+      configuration needed - so whatever ends up in MDC is emitted automatically. Right now
+      that is typically nothing; once OpenTelemetry / Micrometer Tracing populates "traceId"
+      and "spanId" in MDC, those start appearing in every log line with zero changes here.
+    -->
+    <springProfile name="!local">
+        <appender name="JSON" class="ch.qos.logback.core.ConsoleAppender">
+            <encoder class="net.logstash.logback.encoder.LogstashEncoder"/>
+        </appender>
+        <root level="${LOG_LEVEL:-INFO}">
+            <appender-ref ref="JSON"/>
+        </root>
+    </springProfile>
+
+    <!--
+      local: human-readable console output. "%mdc" prints the whole MDC map (e.g.
+      "traceId=... spanId=...") when present and nothing when empty, so this does not assume
+      any particular key - such as the removed "requestId" - is always populated.
+    -->
+    <springProfile name="local">
+        <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+            <encoder>
+                <pattern>%d{HH:mm:ss} %-5level [%mdc] %logger{20} - %msg%n</pattern>
+            </encoder>
+        </appender>
+        <root level="DEBUG">
+            <appender-ref ref="CONSOLE"/>
+        </root>
+    </springProfile>
+
+</configuration>

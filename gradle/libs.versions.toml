@@ -1,0 +1,33 @@
+[versions]
+springBoot = "4.1.1"
+springDependencyManagement = "1.1.7"
+liquibaseGradle = "3.0.2"
+# NOTE: keycloak-admin-client versions independently of the Keycloak SERVER.
+# The server image is 26.7.3; the newest admin-client on Maven Central is 26.0.12.
+# There is no 26.7.x admin client. Do not "fix" this to match the server.
+keycloakAdminClient = "26.0.12"
+keycloakTestcontainers = "4.3.1"
+springdoc = "3.0.0"
+liquibaseHibernate = "5.0.4"
+lombok = "1.18.48"
+mapstruct = "1.6.3"
+lombokMapstructBinding = "0.2.0"
+spotless = "8.10.2"
+archunit = "1.5.0"
+
+[libraries]
+keycloak-admin-client = { module = "org.keycloak:keycloak-admin-client", version.ref = "keycloakAdminClient" }
+keycloak-testcontainers = { module = "com.github.dasniko:testcontainers-keycloak", version.ref = "keycloakTestcontainers" }
+springdoc = { module = "org.springdoc:springdoc-openapi-starter-webmvc-ui", version.ref = "springdoc" }
+liquibase-hibernate = { module = "org.liquibase.ext:liquibase-hibernate7", version.ref = "liquibaseHibernate" }
+lombok = { module = "org.projectlombok:lombok", version.ref = "lombok" }
+mapstruct = { module = "org.mapstruct:mapstruct", version.ref = "mapstruct" }
+mapstruct-processor = { module = "org.mapstruct:mapstruct-processor", version.ref = "mapstruct" }
+lombok-mapstruct-binding = { module = "org.projectlombok:lombok-mapstruct-binding", version.ref = "lombokMapstructBinding" }
+archunit-junit5 = { module = "com.tngtech.archunit:archunit-junit5", version.ref = "archunit" }
+
+[plugins]
+springBoot = { id = "org.springframework.boot", version.ref = "springBoot" }
+springDependencyManagement = { id = "io.spring.dependency-management", version.ref = "springDependencyManagement" }
+liquibase = { id = "org.liquibase.gradle", version.ref = "liquibaseGradle" }
+spotless = { id = "com.diffplug.spotless", version.ref = "spotless" }

@@ -1,0 +1,39 @@
+databaseChangeLog:
+  # The admin listing filters with LIKE '%term%'. A leading wildcard cannot use a B-tree
+  # index, so uk_users_email_normalized was useless to it and both the page query and the
+  # count query fell back to a parallel sequential scan - measured at 1.17 s against
+  # 1,000,216 rows. pg_trgm indexes the 3-character substrings of the column, which is
+  # exactly what an infix LIKE needs, and turns that into a bitmap index scan.
+  #
+  # Caveat kept honest: a search term shorter than three characters yields no trigram, so
+  # those queries still sequentially scan. Nothing indexes them; the fix would be a minimum
+  # term length in the API, not another index.
+  - changeSet:
+      id: auth-002-pg-trgm-extension
+      author: p-platform
+      comment: >-
+        CREATE EXTENSION needs superuser (or pg_trgm pre-installed by the DBA) on managed
+        Postgres. Kept in its own changeset so a deployment that has to have it installed
+        out-of-band can mark just this one as ran, rather than the index with it.
+      changes:
+        - sql:
+            splitStatements: false
+            sql: CREATE EXTENSION IF NOT EXISTS pg_trgm
+      rollback:
+        - sql:
+            splitStatements: false
+            sql: DROP EXTENSION IF EXISTS pg_trgm
+
+  - changeSet:
+      id: auth-002-users-email-normalized-trgm
+      author: p-platform
+      changes:
+        - sql:
+            splitStatements: false
+            sql: >-
+              CREATE INDEX IF NOT EXISTS idx_users_email_normalized_trgm
+              ON users USING gin (email_normalized gin_trgm_ops)
+      rollback:
+        - sql:
+            splitStatements: false
+            sql: DROP INDEX IF EXISTS idx_users_email_normalized_trgm

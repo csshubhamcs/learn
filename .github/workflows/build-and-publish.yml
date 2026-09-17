@@ -1,0 +1,167 @@
+# Build, test, publish — then STOP.
+#
+#   push to main  ->  detect which services changed
+#                 ->  build + test only those
+#                 ->  push each image, tagged with the full commit SHA
+#                 ->  print the tag in the job summary
+#                 ->  STOP.
+#
+# CI never writes to learn-helm-chart. Promotion is a human editing
+# environments/<env>/<service>.yaml with the tag printed below and committing it;
+# whichever file you edit is the environment that moves. That keeps "what is running
+# in production" a reviewable diff authored by a person, and `git revert` an honest
+# rollback.
+#
+# Pull requests build and test but never publish — a PR must not be able to put bytes
+# into the registry that a promotion could later point at.
+name: build-and-publish
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# id-token: write lets the job request an OIDC token, exchanged for short-lived STS
+# credentials. Nothing long-lived is stored, there is no key to rotate, and the role's
+# trust policy scopes it to this repository.
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  # ── which services changed? ──────────────────────────────────────────────────
+  # A monorepo push must not rebuild every service because you touched one: it burns
+  # runner minutes and mints new image tags for services whose code is byte-identical.
+  # Shared build files legitimately affect everything, so they appear in every filter.
+  changes:
+    runs-on: ubuntu-24.04-arm
+    outputs:
+      services: ${{ steps.filter.outputs.changes }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            user-service:
+              - 'user-service/**'
+              - 'build.gradle.kts'
+              - 'settings.gradle.kts'
+              - 'gradle/**'
+            task-service:
+              - 'task-service/**'
+              - 'build.gradle.kts'
+              - 'settings.gradle.kts'
+              - 'gradle/**'
+            # The next service goes here, same shape. The key must match BOTH the Gradle
+            # module name and charts/<name>/ in learn-helm-chart. Forgetting this entry is
+            # silent: pushes to that service match no filter, the matrix is empty, the
+            # workflow goes green, and nothing is ever published.
+
+  # ── build and test each changed service, in parallel ─────────────────────────
+  build:
+    needs: changes
+    if: needs.changes.outputs.services != '[]'
+    strategy:
+      fail-fast: false
+      matrix:
+        service: ${{ fromJSON(needs.changes.outputs.services) }}
+    # arm64, matching the Ampere box this deploys to. Tests therefore run on the same
+    # architecture as production instead of only resembling it.
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: gradle
+
+      # Testcontainers starts a real PostgreSQL for the integration tests; the
+      # GitHub-hosted runner has a working Docker daemon, so nothing to install.
+      - run: ./gradlew :${{ matrix.service }}:build --no-daemon
+
+      # Only on failure — a green run's reports are noise, a red run's are the point.
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports-${{ matrix.service }}-${{ github.sha }}
+          path: |
+            ${{ matrix.service }}/build/reports/tests/
+            ${{ matrix.service }}/build/test-results/
+          retention-days: 14
+          if-no-files-found: ignore
+
+  # ── publish, push-to-main only ───────────────────────────────────────────────
+  publish:
+    needs: [changes, build]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.changes.outputs.services != '[]'
+    strategy:
+      fail-fast: false
+      matrix:
+        service: ${{ fromJSON(needs.changes.outputs.services) }}
+    # Native arm64. The Dockerfile runs the Gradle build INSIDE the image, so building
+    # linux/arm64 from an amd64 runner puts that whole compile under QEMU emulation --
+    # correct output, several times the wall-clock. Free and unlimited on public repos.
+    runs-on: ubuntu-24.04-arm
+    env:
+      # The ECR repository name IS the service name, so one registry variable covers
+      # every service and adding one needs no new configuration here.
+      #   vars.AWS_REGION            e.g. us-east-1
+      #   vars.ECR_REGISTRY          <account>.dkr.ecr.<region>.amazonaws.com
+      #   vars.AWS_ENDPOINT_URL_ECR  set ONLY when targeting an ECR emulator
+      #   secrets.AWS_OIDC_ROLE_ARN  the role this workflow assumes
+      IMAGE: ${{ vars.ECR_REGISTRY }}/${{ matrix.service }}
+      AWS_ENDPOINT_URL_ECR: ${{ vars.AWS_ENDPOINT_URL_ECR }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: learn-${{ matrix.service }}
+
+      - uses: aws-actions/amazon-ecr-login@v2
+      - uses: docker/setup-buildx-action@v3
+
+      # Context is the repo root: the Dockerfile COPYs the Gradle wrapper and
+      # settings.gradle.kts from there, which is why .dockerignore lives at the root.
+      #
+      # linux/arm64 because the target is an Ampere box. On an arm64 runner this is a
+      # native build, so no QEMU is involved. The tag is the FULL commit SHA and never
+      # "latest" — the chart's validate helper hard-fails a render on "latest", so a
+      # rollback is always deterministic.
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.service }}/Dockerfile
+          platforms: linux/arm64
+          push: true
+          tags: ${{ env.IMAGE }}:${{ github.sha }}
+          provenance: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # The pipeline's final act: the handoff to the human who promotes.
+      - name: Promotion snippet
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" <<SUMMARY
+          ## ${{ matrix.service }} published
+
+          \`${IMAGE}:${GITHUB_SHA}\`
+
+          Nothing is deployed yet. Paste this into **one** of
+          \`environments/staging/${{ matrix.service }}.yaml\` or
+          \`environments/production/${{ matrix.service }}.yaml\` in learn-helm-chart,
+          then commit — whichever file you edit is the environment that moves.
+
+          \`\`\`yaml
+          image:
+            repository: ${IMAGE}
+            tag: ${GITHUB_SHA}
+          \`\`\`
+
+          Staging syncs automatically. Production waits for a manual sync in Argo CD.
+          SUMMARY

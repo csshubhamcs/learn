@@ -1,0 +1,7 @@
+databaseChangeLog:
+  - includeAll:
+      path: db/changelog/auth/
+      errorIfMissingOrEmpty: false
+  - includeAll:
+      path: db/changelog/profile/
+      errorIfMissingOrEmpty: false

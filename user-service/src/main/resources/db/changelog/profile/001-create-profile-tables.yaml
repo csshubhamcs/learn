@@ -1,0 +1,56 @@
+databaseChangeLog:
+  # A single, flat table: every column here is nullable except the primary key, matching
+  # the owner's model - a user is created with an empty profile and fills in whatever they
+  # want, whenever they want. Fresh databases run only this changeset; there used to be a
+  # second table (social_profile) backing a "profile section" mechanism that has since been
+  # removed, so its former columns (instagram_url etc.) now live here as ordinary columns.
+  - changeSet:
+      id: profile-001-user-profile
+      author: p-platform
+      changes:
+        - createTable:
+            tableName: user_profile
+            columns:
+              - column: { name: user_id,       type: uuid,        constraints: { primaryKey: true, nullable: false } }
+              - column: { name: display_name,  type: varchar(120) }
+              - column: { name: headline,      type: varchar(200) }
+              - column: { name: bio,           type: varchar(2000) }
+              - column: { name: avatar_url,    type: varchar(500) }
+              - column: { name: date_of_birth, type: date }
+              - column: { name: gender,        type: varchar(40) }
+              - column: { name: address_line1, type: varchar(200) }
+              - column: { name: address_line2, type: varchar(200) }
+              - column: { name: city,          type: varchar(120) }
+              - column: { name: state,         type: varchar(120) }
+              - column: { name: country,       type: varchar(2) }
+              - column: { name: postal_code,   type: varchar(20) }
+              - column: { name: locale,        type: varchar(10) }
+              - column: { name: timezone,      type: varchar(64) }
+              - column: { name: instagram_url, type: varchar(500) }
+              - column: { name: linkedin_url,  type: varchar(500) }
+              - column: { name: website_url,   type: varchar(500) }
+              - column: { name: x_url,         type: varchar(500) }
+              - column: { name: created_at,    type: timestamptz, constraints: { nullable: false } }
+              - column: { name: updated_at,    type: timestamptz, constraints: { nullable: false } }
+        - addForeignKeyConstraint:
+            constraintName: fk_profile_user
+            baseTableName: user_profile
+            baseColumnNames: user_id
+            referencedTableName: users
+            referencedColumnNames: id
+            onDelete: CASCADE
+
+  # Cleans up the table left behind by the removed "profile section" mechanism. A no-op on
+  # a fresh database (the precondition fails and the changeset is skipped); on a database
+  # that already ran the old profile-001-social-section changeset, this drops the table so
+  # it doesn't linger. There is no data migration here - pre-release, nothing to preserve.
+  - changeSet:
+      id: profile-002-drop-social-profile
+      author: p-platform
+      preConditions:
+        - onFail: MARK_RAN
+        - tableExists:
+            tableName: social_profile
+      changes:
+        - dropTable:
+            tableName: social_profile

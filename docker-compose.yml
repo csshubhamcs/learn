@@ -1,0 +1,126 @@
+services:
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_DB: userdb
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports: ["5432:5432"]
+    # One Postgres cluster, three databases: userdb (user-service), taskdb (task-service) and
+    # keycloak (Keycloak's own store). The second mount creates the other two on first volume
+    # init; it is a no-op on an already-initialized volume - see the file's own comment.
+    #
+    # One cluster, not three containers: the databases stay isolated (separate migration
+    # histories, no cross-database foreign keys - Postgres cannot make one even if you wanted
+    # it), while backup, tuning, connection limits and upgrades are done once instead of
+    # three times. In production each of these becomes its own RDS instance; the app does not
+    # change, only DB_URL does.
+    volumes:
+      - "pgdata:/var/lib/postgresql"
+      - "./scripts/postgres-init-databases.sql:/docker-entrypoint-initdb.d/10-create-databases.sql:ro"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d userdb"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.7.3
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/keycloak
+      KC_DB_USERNAME: keycloak
+      KC_DB_PASSWORD: keycloak
+      KC_HEALTH_ENABLED: "true"
+    ports: ["8080:8080"]
+    # Only the realm export is mounted here, as a single file: --import-realm imports every
+    # *.json it finds in this directory as a realm, and keycloak/user-profile.json (used only
+    # by keycloak-bootstrap below, via kcadm) is not a realm document - mounting the whole
+    # directory made Keycloak try to parse it as one and crash on startup with "Cannot
+    # deserialize value of type LinkedHashMap from Array value" on the "attributes" field.
+    volumes: ["./keycloak/realm-export.json:/opt/keycloak/data/import/realm-export.json:ro"]
+    depends_on:
+      postgres: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/9000 && echo -e 'GET /health/ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && cat <&3 | grep -q '\"status\": \"UP\"'"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  mailpit:
+    image: axllent/mailpit:latest
+    ports: ["1025:1025", "8025:8025"]
+
+  # One-shot bootstrap: the realm-export.json import cannot grant the
+  # user-service service account its realm-management roles (Keycloak
+  # 26.7.3 rejects an unrecognized "serviceAccountClientRoles" field on
+  # ClientRepresentation and aborts --import-realm entirely). Instead we
+  # grant the roles at runtime via kcadm.sh once Keycloak is healthy.
+  # This container is expected to run to completion and exit 0; it is not
+  # a long-lived service.
+  keycloak-bootstrap:
+    image: quay.io/keycloak/keycloak:26.7.3
+    depends_on:
+      keycloak: { condition: service_healthy }
+    volumes: ["./keycloak/user-profile.json:/tmp/user-profile.json:ro"]
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        set -euo pipefail
+        KC=/opt/keycloak/bin/kcadm.sh
+        "$$KC" config credentials --server http://keycloak:8080 --realm master --user admin --password admin
+        "$$KC" add-roles -r p-platform \
+          --uusername service-account-user-service \
+          --cclientid realm-management \
+          --rolename manage-users --rolename view-users --rolename query-users \
+          --rolename view-realm \
+          || echo "roles already granted (or grant failed) - continuing"
+
+        # Keycloak's declarative User Profile marks firstName/lastName required by default.
+        # Our registration API takes only email + password, and an unmet requirement silently
+        # attaches a dynamic VERIFY_PROFILE action that blocks first login with "Account is not
+        # fully set up" -- and it does NOT show up in the user's requiredActions via GET, which
+        # makes it very hard to diagnose.
+        #
+        # Applied from a checked-in file rather than by regex-editing kcadm's output: sed on
+        # pretty-printed JSON is fragile (a single-line pattern silently matches nothing, and a
+        # greedy one strips email's requirement too). The file is the desired state, full stop.
+        "$$KC" update users/profile -r p-platform -f /tmp/user-profile.json \
+          || echo "user profile update skipped - continuing"
+        echo "user profile: email required, firstName/lastName optional"
+
+        # Self-service email change is Keycloak's own UPDATE_EMAIL required action rather than
+        # a hand-rolled verification-token table (see UserServiceImpl). Disabled by default in
+        # this realm; the admin-triggered execute-actions-email call works either way, but the
+        # required action must be enabled for the user-facing flow it links to.
+        "$$KC" update authentication/required-actions/UPDATE_EMAIL -r p-platform -s enabled=true \
+          || echo "UPDATE_EMAIL enable skipped - continuing"
+        echo "UPDATE_EMAIL required action enabled"
+
+        # Keycloak's built-in "roles" client scope carries an oidc-audience-resolve-mapper that
+        # adds one audience per client the user holds roles in. Every normally-registered user
+        # gets `account` roles from default-roles, so their token's aud becomes the ARRAY
+        # ["learn-api","account"] -- and floci's API Gateway JWT authorizer cannot match an
+        # array, so it rejects them all with 401 while the services accept them happily.
+        # Measured: aud "learn-api" -> 200 through the gateway; aud ["learn-api","account"] -> 401.
+        #
+        # This is done here, not in the realm file: declaring clientScopes there REPLACES the
+        # built-ins and strips realm_access.roles from every token.
+        SCOPE_ID=$$("$$KC" get client-scopes -r p-platform --fields id,name --format csv --noquotes \
+          | awk -F, '$$2=="roles"{print $$1}')
+        MAPPER_ID=$$("$$KC" get "client-scopes/$$SCOPE_ID/protocol-mappers/models" -r p-platform \
+          --fields id,name --format csv --noquotes | awk -F, '$$2=="audience resolve"{print $$1}')
+        if [ -n "$$MAPPER_ID" ]; then
+          "$$KC" delete "client-scopes/$$SCOPE_ID/protocol-mappers/models/$$MAPPER_ID" -r p-platform \
+            && echo "audience-resolve mapper removed - aud stays a single string"
+        else
+          echo "audience-resolve mapper already absent"
+        fi
+
+        echo "bootstrap complete"
+
+volumes:
+  pgdata:

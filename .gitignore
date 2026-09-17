@@ -1,0 +1,9 @@
+build/
+.gradle/
+!gradle/wrapper/gradle-wrapper.jar
+*.log
+.env
+
+
+# plugin scratch, regenerated on demand
+.claude-flow/

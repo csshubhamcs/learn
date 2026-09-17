@@ -1,0 +1,29 @@
+databaseChangeLog:
+  - changeSet:
+      id: auth-001-users
+      author: p-platform
+      changes:
+        - createTable:
+            tableName: users
+            columns:
+              - column: { name: id,               type: uuid,         constraints: { primaryKey: true, nullable: false } }
+              - column: { name: status,            type: varchar(16),  constraints: { nullable: false } }
+              - column: { name: email,             type: varchar(320), constraints: { nullable: false } }
+              - column: { name: email_normalized,  type: varchar(320), constraints: { nullable: false } }
+              - column: { name: last_login_at,     type: timestamptz }
+              - column: { name: deleted_at,        type: timestamptz }
+              - column: { name: deleted_by,        type: uuid }
+              - column: { name: created_at,        type: timestamptz, constraints: { nullable: false } }
+              - column: { name: updated_at,        type: timestamptz, constraints: { nullable: false } }
+        - addUniqueConstraint:
+            constraintName: uk_users_email_normalized
+            tableName: users
+            columnNames: email_normalized
+        - createIndex:
+            tableName: users
+            indexName: idx_users_status
+            columns: [{ column: { name: status } }]
+        - createIndex:
+            tableName: users
+            indexName: idx_users_created_at_id
+            columns: [{ column: { name: created_at } }, { column: { name: id } }]

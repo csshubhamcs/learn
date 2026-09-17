@@ -1,0 +1,9 @@
+.git
+**/build
+# ...except the one artifact the image packages. Docker applies patterns in order, so this
+# negation must come after the exclusion above. Without it the Dockerfile's COPY of the jar
+# fails with "file not found" even though the jar is plainly there on disk.
+!**/build/libs/*.jar
+.gradle
+docs
+*.md

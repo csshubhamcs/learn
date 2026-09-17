@@ -1,0 +1,36 @@
+databaseChangeLog:
+  # One flat table. user_id is the Keycloak subject claim and is deliberately NOT a foreign
+  # key: users live in a different service and a different database (userdb), so there is
+  # nothing in taskdb to reference. Ownership is enforced in the service layer, not by the
+  # schema - see TaskServiceImpl#requireOwned.
+  - changeSet:
+      id: task-001-task
+      author: p-platform
+      changes:
+        - createTable:
+            tableName: task
+            columns:
+              - column: { name: id,          type: uuid,         constraints: { primaryKey: true, nullable: false } }
+              - column: { name: user_id,     type: uuid,         constraints: { nullable: false } }
+              - column: { name: title,       type: varchar(200), constraints: { nullable: false } }
+              - column: { name: description, type: varchar(2000) }
+              - column: { name: status,      type: varchar(16),  constraints: { nullable: false } }
+              - column: { name: due_date,    type: date }
+              - column: { name: created_at,  type: timestamptz,  constraints: { nullable: false } }
+              - column: { name: updated_at,  type: timestamptz,  constraints: { nullable: false } }
+
+        # Every non-admin query in this service filters by user_id first, so this index backs
+        # the common case (the owner's own listing, and the ownership lookup on every
+        # single-task operation).
+        - createIndex:
+            tableName: task
+            indexName: idx_task_user_id
+            columns: [{ column: { name: user_id } }]
+
+        # The composite index is not redundant with the one above: Postgres can use the
+        # leading column of a composite index on its own, but "my TODO tasks" - the listing's
+        # only filter beyond the owner - needs both columns to be index-only.
+        - createIndex:
+            tableName: task
+            indexName: idx_task_user_id_status
+            columns: [{ column: { name: user_id } }, { column: { name: status } }]
